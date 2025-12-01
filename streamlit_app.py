@@ -1,16 +1,17 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, f1_score, roc_auc_score
 from sklearn.preprocessing import OneHotEncoder
 
+
 # --------------------------
 # Helpers
 # --------------------------
 def load_olist_sample(limit=20000):
-    """Baixa dados públicos do Olist e prepara um dataset reduzido para demonstração."""
     base = 'https://raw.githubusercontent.com/olist/work-at-olist-data/master/datasets/'
 
     orders = pd.read_csv(
@@ -51,6 +52,7 @@ def load_olist_sample(limit=20000):
 
     return df.sample(n=min(limit, len(df)), random_state=42).reset_index(drop=True)
 
+
 def prepare_X_y(df):
     features = [
         'order_total_price','n_items','n_unique_products',
@@ -64,21 +66,30 @@ def prepare_X_y(df):
     X = df[features].copy()
     y = df['delayed'].astype(int).copy()
 
-    X['order_total_price'] = X['order_total_price'].fillna(X['order_total_price'].median())
-    X['n_items'] = X['n_items'].fillna(1)
-    X['n_unique_products'] = X['n_unique_products'].fillna(1)
-    X['purchase_to_estimate_days'] = X['purchase_to_estimate_days'].fillna(X['purchase_to_estimate_days'].median())
-    X['purchase_hour'] = X['purchase_hour'].fillna(0)
-    X['purchase_dayofweek'] = X['purchase_dayofweek'].fillna(0)
+    X.fillna({
+        'order_total_price': X['order_total_price'].median(),
+        'n_items': 1,
+        'n_unique_products': 1,
+        'purchase_to_estimate_days': X['purchase_to_estimate_days'].median(),
+        'purchase_hour': 0,
+        'purchase_dayofweek': 0
+    }, inplace=True)
 
     ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
-    cat = ohe.fit_transform(X[['customer_state']])
-    cat_cols = list(ohe.get_feature_names_out(['customer_state']))
+    cat_matrix = ohe.fit_transform(X[['customer_state']])
+    states = ohe.categories_[0]
+
+    # nomes das colunas serão só as siglas (SP, RJ, BA...)
+    cat_cols = list(states)
 
     X_num = X.drop(columns=['customer_state']).reset_index(drop=True)
-    X_processed = pd.concat([X_num, pd.DataFrame(cat, columns=cat_cols)], axis=1)
+    X_processed = pd.concat(
+        [X_num, pd.DataFrame(cat_matrix, columns=cat_cols)],
+        axis=1
+    )
 
     return X_processed, y, ohe, cat_cols
+
 
 def train_demo_model(X, y):
     X_train, X_test, y_train, y_test = train_test_split(
@@ -95,12 +106,13 @@ def train_demo_model(X, y):
 
     return clf, X_test, y_test, y_pred, y_proba
 
+
 def predict_from_inputs(clf, ohe, cat_cols, inputs):
     df = pd.DataFrame([inputs])
-    cat = ohe.transform(df[['customer_state']])
-    df_num = df.drop(columns=['customer_state'])
+    cat_matrix = ohe.transform(df[['customer_state']])
+    df_num = df.drop(columns=['customer_state']).reset_index(drop=True)
     df_proc = pd.concat(
-        [df_num.reset_index(drop=True), pd.DataFrame(cat, columns=cat_cols)],
+        [df_num, pd.DataFrame(cat_matrix, columns=cat_cols)],
         axis=1
     )
 
@@ -124,15 +136,16 @@ Este aplicativo demonstra todo o fluxo de uma solução de Data Science:
 4. **Interatividade: teste o modelo com exemplos reais ou valores manuais**
 """)
 
-# Sidebar mode selector
+
 mode = st.sidebar.selectbox(
     "Escolha o modo:",
     ["Demo (baixar e treinar)", "Upload CSV (pré-processado)", "Entrada manual"]
 )
 
-# ---------------------------
+
+# =========================================================
 # DEMO MODE
-# ---------------------------
+# =========================================================
 if mode == "Demo (baixar e treinar)":
     st.info("No modo *Demo*, os dados públicos do Olist serão baixados automaticamente.")
 
@@ -141,33 +154,59 @@ if mode == "Demo (baixar e treinar)":
             df = load_olist_sample(limit=5000)
             st.success(f"Dados carregados: {len(df)} linhas.")
 
-            # ---------- Visualizações ----------
+            # ----------- VISUALIZAÇÕES INTERATIVAS -----------
             st.subheader("📊 Análise Exploratória (EDA)")
-            st.write("Distribuição de pedidos atrasados:")
-            st.bar_chart(df['delayed'].value_counts())
 
-            st.write("Distribuição por estado do cliente:")
-            st.bar_chart(df['customer_state'].value_counts())
+            st.markdown("### Distribuição de pedidos atrasados")
+            st.write("Este gráfico mostra quantos pedidos chegaram no prazo e quantos atrasaram.")
+            fig1 = px.bar(df['delayed'].value_counts(), title="Atrasado (1) vs Não atrasado (0)")
+            st.plotly_chart(fig1, use_container_width=True)
 
-            st.write("Preço total do pedido x atraso:")
-            st.scatter_chart(df[['order_total_price','delayed']])
+            st.markdown("### Distribuição por estado")
+            st.write("Mostra de quais estados vêm a maior parte dos pedidos.")
+            fig2 = px.bar(df['customer_state'].value_counts(), title="Pedidos por estado")
+            st.plotly_chart(fig2, use_container_width=True)
 
-            st.write("Número de itens x atraso:")
-            st.scatter_chart(df[['n_items','delayed']])
+            st.markdown("### Preço total do pedido x atraso")
+            st.write("Permite investigar se pedidos mais caros têm maior probabilidade de atrasar.")
+            fig3 = px.scatter(
+                df,
+                x="order_total_price",
+                y="delayed",
+                opacity=0.5,
+                title="Preço x Atraso"
+            )
+            st.plotly_chart(fig3, use_container_width=True)
 
-            # ---------- Pré-processamento + Modelo ----------
+            st.markdown("### Número de itens x atraso")
+            st.write("Ajuda a entender se pedidos com mais itens atrasam mais.")
+            fig4 = px.scatter(
+                df,
+                x="n_items",
+                y="delayed",
+                opacity=0.5,
+                title="Itens x Atraso"
+            )
+            st.plotly_chart(fig4, use_container_width=True)
+
+            # ----------- Treinamento ----------
             X, y, ohe, cat_cols = prepare_X_y(df)
             clf, X_test, y_test, y_pred, y_proba = train_demo_model(X, y)
 
             st.subheader("📈 Métricas do Modelo")
             st.write("F1-Score:", f1_score(y_test, y_pred))
             st.write("AUC:", roc_auc_score(y_test, y_proba))
-            st.write(classification_report(y_test, y_pred, zero_division=0))
+            st.text(classification_report(y_test, y_pred, zero_division=0))
 
+            # Feature importance com nomes das features limpos
             try:
                 fi = pd.Series(clf.feature_importances_, index=X.columns).sort_values(ascending=False).head(20)
-                st.subheader("Importância das Features")
-                st.bar_chart(fi)
+                st.subheader("🌟 Importância das Features")
+                st.write("Este gráfico mostra quais variáveis mais influenciam o modelo.")
+
+                figFI = px.bar(fi, title="Importância das Features")
+                st.plotly_chart(figFI, use_container_width=True)
+
             except:
                 pass
 
@@ -177,7 +216,7 @@ if mode == "Demo (baixar e treinar)":
             st.session_state['demo_cat_cols'] = cat_cols
             st.session_state['demo_sample'] = df
 
-    # ---- Predição por pedido real ----
+    # ---------- Predição usando pedido real ----------
     if st.session_state.get("demo_clf") is not None:
         df_sample = st.session_state['demo_sample']
 
@@ -214,9 +253,10 @@ if mode == "Demo (baixar e treinar)":
             else:
                 st.success("🟢 **Previsão: o pedido provavelmente NÃO irá atrasar.**")
 
-# ---------------------------
+
+# =========================================================
 # UPLOAD CSV MODE
-# ---------------------------
+# =========================================================
 if mode == "Upload CSV (pré-processado)":
     st.info("Faça upload de um CSV já pré-processado.")
 
@@ -238,9 +278,9 @@ if mode == "Upload CSV (pré-processado)":
             st.session_state['demo_sample'] = df
 
 
-# ---------------------------
+# =========================================================
 # MANUAL INPUT MODE
-# ---------------------------
+# =========================================================
 if mode == "Entrada manual":
     st.subheader("✏️ Previsão usando valores manuais")
 
@@ -255,7 +295,9 @@ if mode == "Entrada manual":
     with col2:
         purchase_hour = st.number_input('Hora da compra', min_value=0, max_value=23, value=12)
         purchase_dayofweek = st.number_input('Dia da semana (0=Seg, 6=Dom)', min_value=0, max_value=6, value=2)
-        customer_state = st.selectbox('Estado do cliente', ['SP','RJ','MG','BA','PR','RS','SC','CE','PE','PA','Other'])
+        customer_state = st.selectbox('Estado do cliente', [
+            'SP','RJ','MG','BA','PR','RS','SC','CE','PE','PA','Other'
+        ])
 
     if st.button("Prever"):
         if st.session_state.get("demo_clf") is None:
