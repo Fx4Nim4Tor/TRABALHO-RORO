@@ -20,8 +20,7 @@ def load_olist_sample(limit=20000):
         low_memory=False
     )
     items = pd.read_csv(base + 'olist_order_items_dataset.csv', low_memory=False)
-    customers = pd.read_csv(base + 'ol
-ist_customers_dataset.csv', low_memory=False)
+    customers = pd.read_csv(base + 'olist_customers_dataset.csv', low_memory=False)
 
     df = orders.merge(
         items.groupby('order_id').agg(
