@@ -144,9 +144,9 @@ if mode == "Demo (baixar e treinar)":
 
             st.write("### Distribuição de pedidos atrasados")
             st.caption("Mostra quantos pedidos foram entregues no prazo e quantos atrasaram — isso ajuda a entender o desbalanceamento do problema.")
-            dist = df['delayed'].value_counts().rename({0: 'No prazo', 1: 'Atrasado'})
+            dist = df['delayed'].value_counts().rename({0: 'No Prazo', 1: 'Atrasados'})
             st.bar_chart(dist)
-            
+
             st.write("### Distribuição por estado do cliente")
             st.caption("Mostra de quais estados vêm os pedidos. Pode indicar regiões com mais entregas e possível impacto logístico.")
             st.bar_chart(df['customer_state'].value_counts())
