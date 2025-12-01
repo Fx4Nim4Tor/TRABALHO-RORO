@@ -1,289 +1,253 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, f1_score, roc_auc_score
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import f1_score, roc_auc_score
+import plotly.express as px
 
-# --------------------------
-# Helpers
-# --------------------------
-def load_olist_sample(limit=20000):
-    """Baixa dados públicos do Olist e prepara um dataset reduzido para demonstração."""
-    base = 'https://raw.githubusercontent.com/olist/work-at-olist-data/master/datasets/'
+st.set_page_config(page_title="Modelo de Atraso de Entregas", layout="wide")
 
-    orders = pd.read_csv(
-        base + 'olist_orders_dataset.csv',
-        parse_dates=['order_purchase_timestamp','order_estimated_delivery_date','order_delivered_customer_date'],
-        low_memory=False
-    )
-    items = pd.read_csv(base + 'olist_order_items_dataset.csv', low_memory=False)
-    customers = pd.read_csv(base + 'olist_customers_dataset.csv', low_memory=False)
-
-    df = orders.merge(
-        items.groupby('order_id').agg(
-            n_items=('order_id','size'),
-            n_unique_products=('product_id','nunique'),
-            order_total_price=('price','sum')
-        ).reset_index(),
-        on='order_id',
-        how='left'
-    )
-
-    df = df.merge(customers[['customer_id','customer_state']], on='customer_id', how='left')
-
-    df['delayed'] = (
-        (df['order_delivered_customer_date'] > df['order_estimated_delivery_date']) |
-        df['order_delivered_customer_date'].isna()
-    ).astype(int)
-
-    df['purchase_hour'] = df['order_purchase_timestamp'].dt.hour
-    df['purchase_dayofweek'] = df['order_purchase_timestamp'].dt.dayofweek
-    df['purchase_to_estimate_days'] = (
-        df['order_estimated_delivery_date'] - df['order_purchase_timestamp']
-    ).dt.days.fillna(0)
-
-    df = df.dropna(subset=[
-        'order_total_price','n_items','customer_state',
-        'order_purchase_timestamp','order_estimated_delivery_date'
-    ])
-
-    return df.sample(n=min(limit, len(df)), random_state=42).reset_index(drop=True)
-
-def prepare_X_y(df):
-    features = [
-        'order_total_price','n_items','n_unique_products',
-        'purchase_to_estimate_days','purchase_hour','purchase_dayofweek',
-        'customer_state'
-    ]
-
-    if 'n_unique_products' not in df.columns:
-        df['n_unique_products'] = df.groupby('order_id')['product_id'].transform('nunique')
-
-    X = df[features].copy()
-    y = df['delayed'].astype(int).copy()
-
-    X['order_total_price'] = X['order_total_price'].fillna(X['order_total_price'].median())
-    X['n_items'] = X['n_items'].fillna(1)
-    X['n_unique_products'] = X['n_unique_products'].fillna(1)
-    X['purchase_to_estimate_days'] = X['purchase_to_estimate_days'].fillna(X['purchase_to_estimate_days'].median())
-    X['purchase_hour'] = X['purchase_hour'].fillna(0)
-    X['purchase_dayofweek'] = X['purchase_dayofweek'].fillna(0)
-
-    ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
-    cat = ohe.fit_transform(X[['customer_state']])
-    cat_cols = list(ohe.get_feature_names_out(['customer_state']))
-
-    X_num = X.drop(columns=['customer_state']).reset_index(drop=True)
-    X_processed = pd.concat([X_num, pd.DataFrame(cat, columns=cat_cols)], axis=1)
-
-    return X_processed, y, ohe, cat_cols
-
-def train_demo_model(X, y):
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-
-    clf = RandomForestClassifier(
-        n_estimators=100, max_depth=6, random_state=42, n_jobs=-1
-    )
-    clf.fit(X_train, y_train)
-
-    y_pred = clf.predict(X_test)
-    y_proba = clf.predict_proba(X_test)[:,1]
-
-    return clf, X_test, y_test, y_pred, y_proba
-
-def predict_from_inputs(clf, ohe, cat_cols, inputs):
-    df = pd.DataFrame([inputs])
-    cat = ohe.transform(df[['customer_state']])
-    df_num = df.drop(columns=['customer_state'])
-    df_proc = pd.concat(
-        [df_num.reset_index(drop=True), pd.DataFrame(cat, columns=cat_cols)],
-        axis=1
-    )
-
-    proba = clf.predict_proba(df_proc)[:,1][0]
-    pred = int(proba >= 0.5)
-    return pred, proba
-
-
-# --------------------------
-# Streamlit App
-# --------------------------
-st.set_page_config(page_title='Modelo Olist - Previsão de Atraso', layout='centered')
-st.title('📦 Previsão de Atraso em Entregas – Modelo Olist')
-
-st.markdown("""
-Este aplicativo demonstra todo o fluxo de uma solução de Data Science:
-
-1. **Carregamento & Exploração dos Dados (EDA)**  
-2. **Treinamento de Modelo (Random Forest)**  
-3. **Visualizações importantes**  
-4. **Interatividade: teste o modelo com exemplos reais ou valores manuais**
+st.title("📦 Predição de Atrasos em Entregas – Olist")
+st.write("""
+Este aplicativo permite:
+- Explorar dados reais da Olist  
+- Visualizar gráficos interativos  
+- Treinar um modelo de Machine Learning  
+- Testar o modelo com dados reais ou valores manuais  
 """)
 
-# Sidebar mode selector
-mode = st.sidebar.selectbox(
-    "Escolha o modo:",
-    ["Demo (baixar e treinar)", "Upload CSV (pré-processado)", "Entrada manual"]
+# --------------------------------------------------------------------
+# 1) Carregar dados
+# --------------------------------------------------------------------
+@st.cache_data
+def load_demo_data():
+    df = pd.read_csv(
+        "https://raw.githubusercontent.com/BrunoS3D/olist-mini-dataset/main/olist_orders_dataset_mini.csv"
+    )
+    df['delayed'] = (df['order_delivered_customer_date'] >
+                     df['order_estimated_delivery_date']).astype(int)
+    df['purchase_hour'] = pd.to_datetime(df['order_purchase_timestamp']).dt.hour
+    df['purchase_dayofweek'] = pd.to_datetime(df['order_purchase_timestamp']).dt.dayofweek
+    return df
+
+df = load_demo_data()
+st.success("Dados carregados com sucesso!")
+
+# --------------------------------------------------------------------
+# 2) Visualizações (EDA)
+# --------------------------------------------------------------------
+st.header("📊 Exploração dos Dados (EDA)")
+
+# --- Distribuição de atrasos ---
+st.markdown("### 🔴 Distribuição de Atrasos")
+st.write("Mostra quantos pedidos atrasaram e quantos foram entregues dentro do prazo.")
+fig_delay = px.bar(
+    df['delayed'].value_counts().reset_index(),
+    x="index",
+    y="delayed",
+    labels={"index": "Atrasou?", "delayed": "Quantidade"},
+    title="Distribuição de pedidos atrasados",
+)
+st.plotly_chart(fig_delay, use_container_width=True)
+
+# --- Distribuição por estado ---
+st.markdown("### 🗺️ Distribuição de Pedidos por Estado")
+st.write("Ajuda a visualizar em quais estados há mais compras registradas.")
+fig_state = px.bar(
+    df['customer_state'].value_counts().reset_index(),
+    x="index",
+    y="customer_state",
+    labels={"index": "Estado", "customer_state": "Quantidade"},
+    title="Distribuição por estado",
+)
+st.plotly_chart(fig_state, use_container_width=True)
+
+# --- Preço total x atraso ---
+st.markdown("### 💰 Preço total do pedido x Atraso")
+st.write("Mostra se pedidos mais caros têm mais probabilidade de atrasar.")
+fig_price = px.scatter(
+    df,
+    x="order_total_price",
+    y="delayed",
+    color="delayed",
+    labels={"delayed": "Atrasou?", "order_total_price": "Preço total"},
+    title="Preço total x atraso",
+)
+st.plotly_chart(fig_price, use_container_width=True)
+
+# --- Número de itens x atraso ---
+st.markdown("### 📦 Quantidade de itens x Atraso")
+st.write("Verifica se pedidos com mais itens tendem a atrasar mais.")
+fig_items = px.scatter(
+    df,
+    x="n_items",
+    y="delayed",
+    color="delayed",
+    labels={"delayed": "Atrasou?", "n_items": "Número de itens"},
+    title="Número de itens x atraso",
+)
+st.plotly_chart(fig_items, use_container_width=True)
+
+# --------------------------------------------------------------------
+# 3) Preparar dados para treino do modelo
+# --------------------------------------------------------------------
+def prepare_X_y(df):
+    X = df[[
+        "order_total_price",
+        "n_items",
+        "n_unique_products",
+        "purchase_to_estimate_days",
+        "purchase_hour",
+        "purchase_dayofweek",
+        "customer_state"
+    ]]
+    y = df["delayed"]
+
+    cat_cols = ["customer_state"]
+    num_cols = X.drop(columns=cat_cols).columns
+
+    ohe = OneHotEncoder(handle_unknown="ignore", sparse=False)
+    X_ohe = ohe.fit_transform(X[cat_cols])
+
+    X_final = np.concatenate([X[num_cols], X_ohe], axis=1)
+
+    return X_final, y, ohe, cat_cols, num_cols
+
+
+X, y, ohe, cat_cols, num_cols = prepare_X_y(df)
+
+# --------------------------------------------------------------------
+# 4) Treinar modelo
+# --------------------------------------------------------------------
+st.header("🧠 Treinamento do Modelo")
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
 )
 
-# ---------------------------
-# DEMO MODE
-# ---------------------------
-if mode == "Demo (baixar e treinar)":
-    st.info("No modo *Demo*, os dados públicos do Olist serão baixados automaticamente.")
+clf = RandomForestClassifier(n_estimators=300, random_state=42)
+clf.fit(X_train, y_train)
 
-    if st.button("Baixar dados e treinar modelo"):
-        with st.spinner("Baixando dados e treinando modelo..."):
-            df = load_olist_sample(limit=5000)
-            st.success(f"Dados carregados: {len(df)} linhas.")
+preds = clf.predict(X_test)
+proba_test = clf.predict_proba(X_test)[:, 1]
 
-            # ---------- Visualizações ----------
-            st.subheader("📊 Análise Exploratória (EDA)")
-            st.write("Distribuição de pedidos atrasados:")
-            st.bar_chart(df['delayed'].value_counts())
+f1 = f1_score(y_test, preds)
+auc = roc_auc_score(y_test, proba_test)
 
-            st.write("Distribuição por estado do cliente:")
-            st.bar_chart(df['customer_state'].value_counts())
+st.write(f"**F1-Score:** `{f1:.3f}`")
+st.write(f"**AUC:** `{auc:.3f}`")
 
-            st.write("Preço total do pedido x atraso:")
-            st.scatter_chart(df[['order_total_price','delayed']])
+# --------------------------------------------------------------------
+# 5) Importância das Features
+# --------------------------------------------------------------------
+st.subheader("📌 Importância das Features")
 
-            st.write("Número de itens x atraso:")
-            st.scatter_chart(df[['n_items','delayed']])
+# nomes da one-hot
+ohe_features = ohe.get_feature_names_out(cat_cols)
 
-            # ---------- Pré-processamento + Modelo ----------
-            X, y, ohe, cat_cols = prepare_X_y(df)
-            clf, X_test, y_test, y_pred, y_proba = train_demo_model(X, y)
+# limpar nomes: customer_state_RS → RS
+ohe_clean = [f.split("_")[-1] for f in ohe_features]
 
-            st.subheader("📈 Métricas do Modelo")
-            st.write("F1-Score:", f1_score(y_test, y_pred))
-            st.write("AUC:", roc_auc_score(y_test, y_proba))
-            st.write(classification_report(y_test, y_pred, zero_division=0))
+feature_names = list(num_cols) + ohe_clean
+importances = clf.feature_importances_
 
-            try:
-                fi = pd.Series(clf.feature_importances_, index=X.columns).sort_values(ascending=False).head(20)
-                st.subheader("Importância das Features")
-                st.bar_chart(fi)
-            except:
-                pass
+df_imp = pd.DataFrame({
+    "Feature": feature_names,
+    "Importância": importances
+}).sort_values("Importância", ascending=False)
 
-            # armazenar modelo na sessão
-            st.session_state['demo_clf'] = clf
-            st.session_state['demo_ohe'] = ohe
-            st.session_state['demo_cat_cols'] = cat_cols
-            st.session_state['demo_sample'] = df
+fig_imp = px.bar(
+    df_imp,
+    x="Importância",
+    y="Feature",
+    orientation="h",
+    title="Importância das Features (com nomes limpos)"
+)
+st.plotly_chart(fig_imp, use_container_width=True)
 
-    # ---- Predição por pedido real ----
-    if st.session_state.get("demo_clf") is not None:
-        df_sample = st.session_state['demo_sample']
+# --------------------------------------------------------------------
+# 6) Predição interativa
+# --------------------------------------------------------------------
+st.header("🧪 Testar o Modelo Interativamente")
 
-        st.subheader("🧪 Testar modelo com um pedido real")
-        pedido_id = st.selectbox(
-            "Escolha um pedido real do dataset:",
-            df_sample['order_id'].astype(str).tolist()
-        )
+tab1, tab2 = st.tabs(["🔎 Usar um pedido real", "✍️ Inserir valores manualmente"])
 
-        if st.button("Fazer previsão"):
-            row = df_sample[df_sample['order_id'] == pedido_id].iloc[0]
+# ---------------- TAB 1: Escolher linha real ----------------------
+with tab1:
+    st.subheader("Escolha um pedido real para prever")
 
-            inputs = {
-                'order_total_price': float(row['order_total_price']),
-                'n_items': int(row['n_items']),
-                'n_unique_products': int(row['n_unique_products']),
-                'purchase_to_estimate_days': int(row['purchase_to_estimate_days']),
-                'purchase_hour': int(row['purchase_hour']),
-                'purchase_dayofweek': int(row['purchase_dayofweek']),
-                'customer_state': str(row['customer_state'])
-            }
+    pedido_ids = df["order_id"].tolist()
+    escolha = st.selectbox("Selecione o pedido:", pedido_ids)
 
-            pred, proba = predict_from_inputs(
-                st.session_state['demo_clf'],
-                st.session_state['demo_ohe'],
-                st.session_state['demo_cat_cols'],
-                inputs
-            )
+    row = df[df["order_id"] == escolha].iloc[0]
 
-            st.write(f"### Probabilidade de atraso: **{proba*100:.1f}%**")
+    if st.button("📌 Prever atraso para este pedido"):
+        inputs = {
+            "order_total_price": row["order_total_price"],
+            "n_items": row["n_items"],
+            "n_unique_products": row["n_unique_products"],
+            "purchase_to_estimate_days": row["purchase_to_estimate_days"],
+            "purchase_hour": row["purchase_hour"],
+            "purchase_dayofweek": row["purchase_dayofweek"],
+            "customer_state": row["customer_state"]
+        }
 
-            if pred == 1:
-                st.error("🔴 **Previsão: o pedido provavelmente irá atrasar.**")
-            else:
-                st.success("🟢 **Previsão: o pedido provavelmente NÃO irá atrasar.**")
+        # preparar entrada manual
+        X_manual = np.array([[inputs["order_total_price"],
+                              inputs["n_items"],
+                              inputs["n_unique_products"],
+                              inputs["purchase_to_estimate_days"],
+                              inputs["purchase_hour"],
+                              inputs["purchase_dayofweek"]]])
 
-# ---------------------------
-# UPLOAD CSV MODE
-# ---------------------------
-if mode == "Upload CSV (pré-processado)":
-    st.info("Faça upload de um CSV já pré-processado.")
+        # one-hot
+        ohe_input = ohe.transform([[inputs["customer_state"]]])
+        X_final_pred = np.concatenate([X_manual, ohe_input], axis=1)
 
-    uploaded = st.file_uploader("Selecione seu arquivo CSV", type=['csv'])
+        pred = clf.predict(X_final_pred)[0]
+        proba = clf.predict_proba(X_final_pred)[0][1]
 
-    if uploaded is not None:
-        df = pd.read_csv(uploaded)
-        st.dataframe(df.head())
+        st.write(f"### Probabilidade de atraso: **{proba*100:.1f}%**")
 
-        if st.button("Treinar modelo"):
-            X, y, ohe, cat_cols = prepare_X_y(df)
-            clf, X_test, y_test, y_pred, y_proba = train_demo_model(X, y)
-
-            st.write("F1:", f1_score(y_test, y_pred))
-
-            st.session_state['demo_clf'] = clf
-            st.session_state['demo_ohe'] = ohe
-            st.session_state['demo_cat_cols'] = cat_cols
-            st.session_state['demo_sample'] = df
-
-
-# ---------------------------
-# MANUAL INPUT MODE
-# ---------------------------
-if mode == "Entrada manual":
-    st.subheader("✏️ Previsão usando valores manuais")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        order_total_price = st.number_input('Preço total do pedido', min_value=0.0, value=50.0)
-        n_items = st.number_input('Número de itens', min_value=1, value=1)
-        n_unique_products = st.number_input('Produtos diferentes', min_value=1, value=1)
-        purchase_to_estimate_days = st.number_input('Dias entre compra e estimativa', min_value=0, value=5)
-
-    with col2:
-        purchase_hour = st.number_input('Hora da compra', min_value=0, max_value=23, value=12)
-        purchase_dayofweek = st.number_input('Dia da semana (0=Seg, 6=Dom)', min_value=0, max_value=6, value=2)
-        customer_state = st.selectbox('Estado do cliente', ['SP','RJ','MG','BA','PR','RS','SC','CE','PE','PA','Other'])
-
-    if st.button("Prever"):
-        if st.session_state.get("demo_clf") is None:
-            st.warning("Treine o modelo primeiro (modo Demo ou Upload CSV).")
+        if pred == 1:
+            st.error("🔴 O modelo prevê **atraso** para este pedido.")
         else:
-            inputs = {
-                'order_total_price': float(order_total_price),
-                'n_items': int(n_items),
-                'n_unique_products': int(n_unique_products),
-                'purchase_to_estimate_days': int(purchase_to_estimate_days),
-                'purchase_hour': int(purchase_hour),
-                'purchase_dayofweek': int(purchase_dayofweek),
-                'customer_state': customer_state
-            }
+            st.success("🟢 O modelo prevê **entrega dentro do prazo**.")
 
-            pred, proba = predict_from_inputs(
-                st.session_state['demo_clf'],
-                st.session_state['demo_ohe'],
-                st.session_state['demo_cat_cols'],
-                inputs
-            )
+# ---------------- TAB 2: Inserir valores manualmente ----------------------
+with tab2:
+    st.subheader("Insira os valores para prever")
 
-            st.write(f"### Probabilidade de atraso: **{proba*100:.1f}%**")
+    col1, col2, col3 = st.columns(3)
 
-            if pred == 1:
-                st.error("🔴 Pedido provavelmente ATRASARÁ")
-            else:
-                st.success("🟢 Pedido provavelmente NÃO atrasará")
+    order_total_price = col1.number_input("Preço total (R$)", 0.0, 5000.0, 200.0)
+    n_items = col2.number_input("Número de itens", 1, 20, 3)
+    n_unique_products = col3.number_input("Produtos únicos", 1, 20, 2)
 
-st.markdown("---")
-st.markdown("Grupo: José Matheus Simsen Lopes")
+    col4, col5, col6 = st.columns(3)
+
+    purchase_to_estimate_days = col4.number_input("Dias até entrega estimada", 1, 50, 10)
+    purchase_hour = col5.number_input("Hora da compra", 0, 23, 14)
+    purchase_dayofweek = col6.selectbox("Dia da semana", list(range(7)))
+
+    customer_state = st.selectbox("Estado do cliente", sorted(df["customer_state"].unique()))
+
+    if st.button("📌 Prever com valores inseridos"):
+        X_manual = np.array([[order_total_price, n_items, n_unique_products,
+                              purchase_to_estimate_days, purchase_hour,
+                              purchase_dayofweek]])
+
+        ohe_input = ohe.transform([[customer_state]])
+        X_final_pred = np.concatenate([X_manual, ohe_input], axis=1)
+
+        pred = clf.predict(X_final_pred)[0]
+        proba = clf.predict_proba(X_final_pred)[0][1]
+
+        st.write(f"### Probabilidade de atraso: **{proba*100:.1f}%**")
+
+        if pred == 1:
+            st.error("🔴 O modelo prevê **atraso** para este pedido.")
+        else:
+            st.success("🟢 O modelo prevê **entrega dentro do prazo**.")
