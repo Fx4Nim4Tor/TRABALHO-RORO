@@ -65,7 +65,8 @@ def prepare_X_y(df):
     X['purchase_hour'] = X['purchase_hour'].fillna(0)
     X['purchase_dayofweek'] = X['purchase_dayofweek'].fillna(0)
 
-    ohe = OneHotEncoder(handle_unknown='ignore', sparse=False)
+    ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
+
     cat = ohe.fit_transform(X[['customer_state']])
     cat_cols = list(ohe.get_feature_names_out(['customer_state']))
 
